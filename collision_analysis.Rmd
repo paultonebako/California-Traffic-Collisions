@@ -1,0 +1,433 @@
+---
+date: "4/10/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = FALSE, warning = FALSE,
+                      message = FALSE)
+
+# loading packages
+library(RSQLite)
+library(DBI)
+library(tidyverse)
+library(writexl)
+library(RColorBrewer)
+library(knitr)
+library(viridis)
+library(tidymodels)
+library(themis)
+library(baguette)
+
+# importing  data
+
+## establishing  connection
+con <- dbConnect(RSQLite::SQLite(), "data-raw/switrs.sqlite")
+
+## identifying tables 
+dbListTables(con)
+
+## reading table collisions
+collisions <- tbl(con, "collisions")
+
+
+```
+
+## Traffic Collisions in California 2010-2020
+
+This document aims to conduct an exploratory analysis on traffic collisions in the state of California over the last decade.
+
+The main objectives of this analysis are:
+
+1) To determine the percentage of collisions resulting in injuries versus those that do not result in injuries over time.
+2) To determine the percentage of the main collision factors over time.
+3) To calculate the average number of collisions per day of the week (Monday to Sunday).
+4) To create a map showing the average number of crashes by severity injuries in the most recent years presented in this database (2019-2020).
+5) To build a classification model to predict whether a collision will result in injuries.
+
+## About the dataset
+
+The [Statewide Integrated Traffic Records System (SWITRS)](https://iswitrs.chp.ca.gov/Reports/jsp/index.jsp) is a database maintained by the State of California that contains information on traffic collisions.
+
+The data is used extensively for various purposes, such as identifying when automobiles, motorcycles, and bicycles crash, quantifying the risks associated with daylight saving time, and providing other statistics on collisions in the state.
+
+For this analysis, we will mainly focus on the collisions table, which includes the following columns:
+
+
+
+```{r}
+# glimpse of the data table collisions
+# collisions %>%
+#   select(everything()) %>%
+#   names()
+  
+```
+
+To better navigate the data for this analysis, we are currently dropping some columns and keeping only the necessary data. Here's a first look at the data considered for this analysis.
+
+```{r}
+#create dataframe from 2010 to 2020
+
+df_collisions <- read.csv("df_collisions_2010_2020_v2.csv")
+
+df_collisions %>% 
+  str() %>% 
+```
+
+## Analysis
+
+
+### 1) To determine the percentage of collisions resulting in injuries versus those that do not result in injuries over time
+
+
+```{r}
+# table with injured vs not injuried
+df_injured <- df_collisions %>% 
+  mutate(
+    category_injuries = case_when(injured_victims > 0 ~ "injured",
+                                  bicyclist_killed_count > 0 ~ "injured",
+                                  bicyclist_injured_count > 0 ~ "injured", 
+                                  pedestrian_killed_count > 0 ~ "injured", 
+                                  pedestrian_injured_count > 0 ~ "injured", 
+                                  motorcyclist_killed_count > 0 ~ "injured", 
+                                  motorcyclist_injured_count > 0 ~ "injured", 
+                                  other_visible_injury_count > 0 ~ "injured", 
+                                  complaint_of_pain_injury_count > 0 ~ "injured", 
+                                  severe_injury_count > 0 ~ "injured",
+                                  .default = "not injured"
+                                  
+    )
+  ) %>% 
+  group_by(collision_date,category_injuries) %>% 
+  summarise(
+    count = n(),
+    .groups = "drop"
+  ) %>% 
+  group_by(collision_date) %>% 
+  mutate(
+    percentage = round(count / sum(count) * 100,0)
+  )
+```
+
+```{r}
+df_injured %>% 
+  ggplot()+
+  aes(x=as.Date(collision_date),y=percentage,color=category_injuries)+
+  geom_line(alpha=0.08,group=1)+
+  geom_smooth(method = "loess",spam=0.8,linewidth=0.4,linetype=2)+
+  scale_x_date(date_breaks = "year",
+               date_labels = "%Y",
+               limits = c(as.Date("2010-01-01"),as.Date("2020-12-31")),
+               ) +
+  theme_bw()+
+  scale_color_manual(values = c("royalblue", "tomato"), 
+                     name = "Category of Injuries")+
+  labs(
+    x = "Year by Collision Date",
+    y = "Percentage of Injuried/Not Injuried People",
+    title = glue::glue("Total Injuries Over Time"),
+    subtitle = "Percentage of collisions resulting in injuries versus not injuries",
+    caption = "\nSource: Statewide Integrated Traffic Records System (SWITRS)")
+
+```
+
+
+
+### 2) To determine the percentage of the main collision factors over time
+
+
+```{r}
+# table with primary factor
+df_factor <- df_collisions %>% 
+  select(collision_date,primary_collision_factor) %>%
+  filter(!is.na(primary_collision_factor)&
+         !primary_collision_factor==2) %>% 
+  group_by(collision_date,primary_collision_factor) %>% 
+  summarise(
+    count = n(),
+    .drops="drop"
+  ) %>% 
+  group_by(collision_date) %>% 
+  mutate(
+    percentage = round(count / sum(count) * 100,0)
+  )
+```
+
+```{r}
+df_factor %>% 
+  ggplot()+
+  aes(x=as.Date(collision_date),y=percentage,color=primary_collision_factor)+
+  geom_line(alpha=0.07,group=1)+
+  geom_smooth(method = "loess",spam=0.8,linewidth=0.4,linetype=2)+
+  scale_x_date(date_breaks = "year",
+               date_labels = "%Y",
+               limits = c(as.Date("2010-01-01"),as.Date("2020-12-31")),
+               ) +
+  theme_bw()+
+  labs(
+    x = "Year by Collision Date",
+    y = "Percentage of Primaty Collision Factor",
+    title = glue::glue("Total Collisions Over Time by Factor"),
+    subtitle = "Percentage of collisions separated by the primary factor",
+    caption = "\nSource: Statewide Integrated Traffic Records System (SWITRS)")
+
+```
+
+
+```{r}
+# table with primary factor excluding vehicle violation
+df_factor_2 <- df_collisions %>% 
+  select(collision_date,primary_collision_factor) %>%
+  filter(!is.na(primary_collision_factor)&
+         !primary_collision_factor %in% c("2","vehicle code violation")) %>% 
+  group_by(collision_date,primary_collision_factor) %>% 
+  summarise(
+    count = n(),
+    .drops = "drop"
+  ) %>% 
+  group_by(collision_date) %>% 
+  mutate(
+    percentage = round(count / sum(count) * 100,0)
+  )
+```
+
+```{r}
+df_factor_2 %>% 
+  ggplot()+
+  aes(x=as.Date(collision_date),y=percentage,color=primary_collision_factor)+
+  geom_line(alpha=0.08,group=1)+
+  geom_smooth(method = "loess",spam=2,linewidth=0.4,linetype=2)+
+  scale_x_date(date_breaks = "year",
+               date_labels = "%Y",
+               limits = c(as.Date("2010-01-01"),as.Date("2020-12-31")),
+               ) +
+  theme_bw()+
+  labs(
+    x = "Year by Collision Date",
+    y = "Percentage of Primaty Collision Factor",
+    title = glue::glue("Total Collisions Over Time by Factor"),
+    subtitle = "Percentage of collisions separated by the primary factor, excluding the main factor VEHICLE CODE VIOLATION",
+    caption = "\nSource: Statewide Integrated Traffic Records System (SWITRS)")
+
+```
+
+
+### 3) To calculate the average number of collisions per day of the week (Monday to Sunday)
+
+
+```{r}
+# creat table with average of collisions by day of the week
+df_week <- df_collisions %>% 
+  mutate(
+    day_week = lubridate::wday(collision_date, label = T),
+    category_injuries = case_when(injured_victims > 0 ~ "injured",
+                                  bicyclist_killed_count > 0 ~ "injured",
+                                  bicyclist_injured_count > 0 ~ "injured", 
+                                  pedestrian_killed_count > 0 ~ "injured", 
+                                  pedestrian_injured_count > 0 ~ "injured", 
+                                  motorcyclist_killed_count > 0 ~ "injured", 
+                                  motorcyclist_injured_count > 0 ~ "injured", 
+                                  other_visible_injury_count > 0 ~ "injured", 
+                                  complaint_of_pain_injury_count > 0 ~ "injured", 
+                                  severe_injury_count > 0 ~ "injured",
+                                  .default = "not injured"
+                                  
+    )
+  ) %>%
+  group_by(day_week, category_injuries) %>%
+  summarise(
+    avg_collisions = mean(n()),
+  ) 
+```
+
+```{r}
+df_week %>% 
+  ggplot()+
+  aes(x=avg_collisions,y=forcats::fct_rev(day_week),fill=category_injuries)+
+  geom_col(alpha=0.5,position="dodge")+
+  theme_bw()+
+  scale_fill_manual(values = c("royalblue", "tomato"), 
+                 name = "Category of Injuries")+
+  scale_x_continuous(expand = expansion(add = c(0,30000)),
+                     labels = scales::number_format(accuracy = 1,
+                                                    big.mark = "."))+
+  scale_y_discrete(
+    labels = c("Sun",
+               "Mon",
+               "Tue",
+               "Wed",
+               "Thu",
+               "Fri",
+               "Sat")
+  )+ 
+  labs(
+    x = "Average of Collisions",
+    y = "Day of the Week",
+    title = "Total Collisions by The Day of the Week",
+    subtitle = "Average of collisions separated by the day of the week",
+    caption = "Source: Statewide Integrated Traffic Records System (SWITRS)")
+
+```
+
+
+### 4) To create a map showing the average number of crashes by severity injuries in the most recent years presented in this database (2019-2020).
+
+```{r}
+# to do: include raster behind
+df_collisions %>%
+  filter(!(collision_severity=='N') &
+           dplyr::between(lubridate::year(collision_date),2020,2020)&
+           !is.na(latitude)&
+           !is.na(longitude)
+  ) %>%
+  group_by(collision_severity,latitude,longitude) %>%
+  summarise(
+    n_collisions = n(),
+    .groups = "drop"
+  ) %>%
+  ggplot()+
+  aes(x=longitude, y=latitude, color=collision_severity)+
+  geom_point(size=0.4, alpha=0.3)+
+  # scale_color_viridis_d()+
+  theme_bw()+
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    title = "Total Collisions by Collision Severity",
+    subtitle = "Average of collisions aggregated by the collision severity",
+    caption = "Source: Statewide Integrated Traffic Records System (SWITRS)")
+```
+
+
+### 5) To build a classification model to predict whether a collision will result in injuries.
+
+
+Steps for building and evaluating the model:
+
+1) Creating cross-validation folds
+
+
+```{r}
+crash <- df_collisions %>% 
+  mutate(
+    collision_date = lubridate::as_date(collision_date),
+    category_injuries = case_when(injured_victims > 0 ~ "injured",
+                                  bicyclist_killed_count > 0 ~ "injured",
+                                  bicyclist_injured_count > 0 ~ "injured", 
+                                  pedestrian_killed_count > 0 ~ "injured", 
+                                  pedestrian_injured_count > 0 ~ "injured", 
+                                  motorcyclist_killed_count > 0 ~ "injured", 
+                                  motorcyclist_injured_count > 0 ~ "injured", 
+                                  other_visible_injury_count > 0 ~ "injured", 
+                                  complaint_of_pain_injury_count > 0 ~ "injured", 
+                                  severe_injury_count > 0 ~ "injured",
+                                  .default = "not injured"
+                                  
+    ))%>% 
+  # dropping columns already added to the variable category_injured
+  select(-injured_victims,
+         -bicyclist_killed_count,
+         -bicyclist_injured_count,
+         -pedestrian_killed_count,
+         -pedestrian_injured_count,
+         -motorcyclist_killed_count,
+         -motorcyclist_injured_count,
+         -other_visible_injury_count,
+         -complaint_of_pain_injury_count,
+         -severe_injury_count,
+         -case_id,
+         -collision_severity) # dropping collision severity to avoid over fitting
+
+#using a small sample as this full model would require a great time/resource to execute
+
+crash <- crash %>% dplyr::sample_n(200000, replace = TRUE)
+
+set.seed(9999)
+
+crash_split <- initial_split(crash, strata = category_injuries)
+crash_train <- training(crash_split)
+crash_test <- testing(crash_split)
+
+crash_folds <- vfold_cv(crash_train, strata = category_injuries)
+```
+
+```{r echo=TRUE}
+crash_folds
+```
+
+
+2) Creating a model (Bagged Tree)
+
+```{r echo=TRUE}
+crash_rec <- recipe(category_injuries ~ ., data = crash_train) %>%
+  step_date(collision_date) %>%
+  step_rm(collision_date) %>%
+  # step_other(collision_severity,
+  #            other = "OTHER"
+  # ) %>%
+  step_downsample(category_injuries)
+
+bag_spec <- bag_tree(min_n = 10) %>%
+  set_engine("rpart", times = 20) %>%
+  set_mode("classification")
+
+crash_wf <- workflow() %>%
+  add_recipe(crash_rec) %>%
+  add_model(bag_spec)
+
+crash_wf
+```
+
+
+3) Fit this model to the cross-validation re-samples 
+
+```{r}
+doParallel::registerDoParallel()
+crash_res <- fit_resamples(
+  crash_wf,
+  crash_folds,
+  control = control_resamples(save_pred = TRUE)
+)
+```
+
+
+4) Fit to the entire training set and evaluate on the testing set
+
+```{r echo=TRUE}
+crash_fit <- last_fit(crash_wf, crash_split)
+collect_metrics(crash_fit)
+```
+
+```{r}
+crash_imp <- crash_fit$.workflow[[1]] %>% extract_fit_parsnip()
+  # pull_workflow_fit()
+
+crash_imp$fit$imp %>%
+  slice_max(value, n = 10) %>%
+  ggplot(aes(value, fct_reorder(term, value))) +
+  geom_col(alpha = 0.8, fill = "royalblue") +
+  labs(x = "Variable importance score",
+       y = NULL,
+       title = "Important features in prediction injury")+
+  theme_bw()
+
+```
+
+5) Plot the ROC Curve
+
+
+```{r}
+collect_predictions(crash_fit) %>%
+  roc_curve(category_injuries, .pred_injured) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_line(size = 1.5, color = "royalblue") +
+  geom_abline(
+    lty = 2, alpha = 0.5,
+    color = "gray50",
+    size = 1.2
+  ) +
+  theme_bw()+
+  coord_equal()
+```
+
+
